@@ -1,0 +1,74 @@
+name: accesscore
+services:
+  api:
+    build: .
+    ports:
+      - 3000:3000
+    env_file:
+      - .env
+    environment:
+      - DEBUG=false
+    profiles:
+      - prod
+    depends_on:
+      redis:
+        condition: service_healthy
+      scylla-main:
+        condition: service_healthy
+
+  redis: &redis
+    image: redis:alpine
+    profiles:
+      - prod
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+
+  redis-dev:
+    <<: *redis
+    profiles:
+      - dev
+    ports:
+      - 6379:6379
+
+  scylla-main: &scylla-main
+    build: ./scylla
+    container_name: accesscore-scylla-main
+    healthcheck:
+      test: ["CMD-SHELL", "[ $$(nodetool statusgossip) = running ]"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    profiles:
+      - prod
+    restart: always
+    command: --smp 1 --overprovisioned 1 --api-address 0.0.0.0
+
+  scylla-main-dev:
+    <<: *scylla-main
+    container_name: accesscore-scylla-dev-main
+    profiles:
+      - dev
+    ports:
+      - 9042:9042
+
+  scylla: &scylla
+    build: ./scylla
+    command: --seeds scylla-main --smp 1 --overprovisioned 1 --api-address 0.0.0.0
+    deploy:
+      mode: replicated
+      replicas: 2
+    profiles:
+      - prod
+    restart: always
+    depends_on:
+      scylla-main:
+        condition: service_healthy
+
+  scylla-dev:
+    <<: *scylla
+    command: --seeds scylla-main-dev --smp 1 --overprovisioned 1 --api-address 0.0.0.0
+    profiles:
+      - dev
+    depends_on:
+      scylla-main-dev:
+        condition: service_healthy
