@@ -6,5 +6,5 @@ pub async fn sign_up(
     Extension(TenantID { id: tenant_id }): Extension<TenantID>,
     State(state): State<AppState>
 ) {
-
+    let state = state.read().await;
 }

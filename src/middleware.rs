@@ -38,7 +38,7 @@ pub async fn tenant(
     mut req: Request,
     next: Next,
 ) -> Result<Response<Body>, (StatusCode, Json<responses::Response<Value>>)> {
-    let state = state.lock().await;
+    let state = state.read().await;
 
     let result = state
         .db

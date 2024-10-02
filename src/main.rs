@@ -9,7 +9,7 @@ use axum::Router;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tower_http::{
     compression::CompressionLayer, decompression::DecompressionLayer, limit::RequestBodyLimitLayer,
     timeout::TimeoutLayer, trace::TraceLayer,
@@ -32,7 +32,7 @@ async fn main() {
 
     let redis_session = redis::session().await;
 
-    let state: AppState = Arc::new(Mutex::new(State {
+    let state: AppState = Arc::new(RwLock::new(State {
         db: scylla_session,
         redis: redis_session,
     }));

@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use redis_pool::SingleRedisPool;
 use scylla::Session;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 pub struct State {
     pub db: Session,
     pub redis: SingleRedisPool,
 }
 
-pub type AppState = Arc<Mutex<State>>;
+pub type AppState = Arc<RwLock<State>>;
