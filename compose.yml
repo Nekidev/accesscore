@@ -20,6 +20,7 @@ services:
     image: redis:alpine
     profiles:
       - prod
+    restart: on-failure
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
 
@@ -40,7 +41,7 @@ services:
       retries: 10
     profiles:
       - prod
-    restart: always
+    restart: on-failure
     command: --smp 1 --overprovisioned 1 --api-address 0.0.0.0
 
   scylla-main-dev:
@@ -59,7 +60,7 @@ services:
       replicas: 2
     profiles:
       - prod
-    restart: always
+    restart: on-failure
     depends_on:
       scylla-main:
         condition: service_healthy

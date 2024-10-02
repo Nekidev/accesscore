@@ -1,8 +1,10 @@
 use accesscore::db;
+use accesscore::error_handlers::handler_404;
+use accesscore::middleware as ac_middleware;
 use accesscore::redis;
-use accesscore::routes::handler_404;
 use accesscore::state::State;
 use accesscore::{routes, state::AppState};
+use axum::middleware as ax_middleware;
 use axum::Router;
 use std::env;
 use std::sync::Arc;
@@ -13,7 +15,7 @@ use tower_http::{
     timeout::TimeoutLayer, trace::TraceLayer,
 };
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 8)]
 async fn main() {
     let debug: bool = env::var("DEBUG").unwrap_or("true".to_string()) == "true".to_string();
 
@@ -26,6 +28,7 @@ async fn main() {
     }
 
     let scylla_session = db::session().await;
+    db::init(&scylla_session).await;
 
     let redis_session = redis::session().await;
 
@@ -37,6 +40,14 @@ async fn main() {
     let app = Router::new()
         .merge(routes::auth::router())
         .fallback(handler_404)
+        .layer(ax_middleware::from_fn_with_state(
+            state.clone(),
+            ac_middleware::request_id,
+        ))
+        .layer(ax_middleware::from_fn_with_state(
+            state.clone(),
+            ac_middleware::tenant,
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(
             CompressionLayer::new()

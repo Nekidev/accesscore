@@ -1,7 +1,10 @@
 pub mod db;
+pub mod error_handlers;
+pub mod middleware;
 pub mod redis;
 pub mod requests;
 pub mod responses;
 pub mod routes;
 pub mod state;
+pub mod types;
 pub mod utils;

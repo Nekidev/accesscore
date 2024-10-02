@@ -1,5 +1,9 @@
-use scylla::{frame::Compression, Session, SessionBuilder};
-use std::{env, time::Duration};
+use scylla::{
+    frame::Compression,
+    transport::downgrading_consistency_retry_policy::DowngradingConsistencyRetryPolicy,
+    ExecutionProfile, Session, SessionBuilder,
+};
+use std::{env, fs, time::Duration};
 
 pub async fn session() -> Session {
     let hosts: String =
@@ -12,16 +16,39 @@ pub async fn session() -> Session {
         builder = builder.known_node(host);
     }
 
+    let execution_profile_handle = ExecutionProfile::builder()
+        .retry_policy(Box::new(DowngradingConsistencyRetryPolicy::new()))
+        .request_timeout(Some(Duration::from_secs(2)))
+        .build()
+        .into_handle();
+
     builder
         .connection_timeout(Duration::from_secs(3))
         .compression(Some(Compression::Lz4))
+        .default_execution_profile_handle(execution_profile_handle)
         .build()
         .await
         .unwrap()
 }
 
 pub async fn init(session: &Session) {
-    let _ = session.query_unpaged("
-        CREATE KEYSPACE 
-    ", ()).await;
+    let init_query =
+        fs::read_to_string("cql/init.cql").expect("Should have been able to read cql/init.cql.");
+
+    let queries: Vec<&str> = init_query.split(";").collect();
+
+    for mut query in queries {
+        query = query.trim();
+
+        if query.trim() == "" {
+            continue;
+        }
+
+        match session.query_unpaged(query, ()).await {
+            Err(err) => {
+                panic!("\n{err:?}:\n\n{query}\n");
+            }
+            _ => {}
+        };
+    }
 }
