@@ -9,8 +9,8 @@ use crate::{
 };
 
 pub async fn handler_404(
-    Extension(request_id): Extension<RequestID>,
-    Extension(tenant_id): Extension<TenantID>,
+    Extension(RequestID { id: request_id }): Extension<RequestID>,
+    Extension(TenantID { id: tenant_id }): Extension<TenantID>,
     request: extract::Request,
 ) -> (StatusCode, Json<Response<Value>>) {
     (
@@ -25,8 +25,8 @@ pub async fn handler_404(
                 meta: HashMap::from([("path".to_string(), json!(request.uri().path()))]),
             }]),
             Some(HashMap::from([
-                ("request_id".to_string(), request_id.id),
-                ("tenant_id".to_string(), tenant_id.id),
+                ("request_id".to_string(), request_id),
+                ("tenant_id".to_string(), tenant_id),
             ])),
             None,
         )),
