@@ -1,9 +1,5 @@
 #[derive(Clone)]
-pub struct RequestID {
-    pub id: String,
-}
+pub struct RequestID(pub String);
 
 #[derive(Clone)]
-pub struct TenantID {
-    pub id: String,
-}
+pub struct TenantID(pub String);

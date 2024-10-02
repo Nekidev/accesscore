@@ -9,8 +9,8 @@ use crate::{
 };
 
 pub async fn handler_404(
-    Extension(RequestID { id: request_id }): Extension<RequestID>,
-    Extension(TenantID { id: tenant_id }): Extension<TenantID>,
+    Extension(RequestID(request_id)): Extension<RequestID>,
+    Extension(TenantID(tenant_id)): Extension<TenantID>,
     request: extract::Request,
 ) -> (StatusCode, Json<Response<Value>>) {
     (

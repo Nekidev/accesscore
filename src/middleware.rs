@@ -19,7 +19,7 @@ use crate::{
 pub async fn request_id(mut req: Request, next: Next) -> Response<Body> {
     let id = gen_id(None);
 
-    req.extensions_mut().insert(RequestID { id });
+    req.extensions_mut().insert(RequestID(id));
 
     next.run(req).await
 }
@@ -89,7 +89,7 @@ pub async fn tenant(
         .into_typed::<(String,)>()
         .unwrap();
 
-    req.extensions_mut().insert(TenantID { id: tenant_id });
+    req.extensions_mut().insert(TenantID(tenant_id));
 
     Ok(next.run(req).await)
 }

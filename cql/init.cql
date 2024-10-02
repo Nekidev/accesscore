@@ -262,10 +262,10 @@ CREATE TABLE IF NOT EXISTS activity_logs (
     organization_id ASCII,
     user_id ASCII,
     group_id ASCII,
-    trace_id ASCII,
+    request_id ASCII,
     timestamp TIMESTAMP,
     details ASCII,
-    PRIMARY KEY ((tenant_id, trace_id))
+    PRIMARY KEY (tenant_id)
 );
 
 CREATE TABLE IF NOT EXISTS notification_recipients (
