@@ -1,3 +1,5 @@
+pub mod types;
+
 use scylla::{
     frame::Compression,
     transport::downgrading_consistency_retry_policy::DowngradingConsistencyRetryPolicy,

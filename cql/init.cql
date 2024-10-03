@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS users_by_organization (
 CREATE TABLE IF NOT EXISTS users (
     id ASCII,
     tenant_id ASCII,
-    username ASCII,
+    username TEXT,
     first_name TEXT,
     middle_name TEXT,
     last_name TEXT,

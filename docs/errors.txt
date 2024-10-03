@@ -1,0 +1,5 @@
+1: Database Query Error in tenant middleware when querying the host.
+2: Database Query Error in /auth/sign-up when querying for existing usernames.
+3: Database Query Error in /auth/sign-up when querying for existing emails.
+4: Database Error preparing user insert in /auth/sign-up. 
+5: BCrypt hashing error hashing password in /auth/sign-up.

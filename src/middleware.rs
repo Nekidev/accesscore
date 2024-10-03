@@ -5,12 +5,14 @@ use axum::{
     extract::{Host, Request, State},
     http::{Response, StatusCode},
     middleware::Next,
-    Json,
+    response::IntoResponse,
+    Extension, Json,
 };
 use serde_json::{json, Value};
 
 use crate::{
-    responses::{self, Error},
+    error_handlers::error_response,
+    responses::{self, CommonError},
     state::AppState,
     types::{RequestID, TenantID},
     utils::id::gen_id,
@@ -33,11 +35,12 @@ pub async fn authentication(
 }
 
 pub async fn tenant(
+    Extension(RequestID(request_id)): Extension<RequestID>,
     State(state): State<AppState>,
     Host(host): Host,
     mut req: Request,
     next: Next,
-) -> Result<Response<Body>, (StatusCode, Json<responses::Response<Value>>)> {
+) -> Response<Body> {
     let state = state.read().await;
 
     let result = state
@@ -46,41 +49,30 @@ pub async fn tenant(
         .await;
 
     if let Err(_) = result {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(responses::Response::new(
-                None,
-                Some(vec![Error {
-                    code: 500,
-                    message: "Server Internal Error".to_string(),
-                    detail: "An error occurred in the server.".to_string(),
-                    location: "server".to_string(),
-                    meta: HashMap::new(),
-                }]),
-                None,
-                None,
-            )),
-        ));
+        return CommonError::InternalServerError {
+            internal_code: 1,
+            request_id,
+            tenant_id: None,
+        }
+        .into_response();
     }
 
     let result = result.unwrap();
 
     if result.rows_num().unwrap() == 0 {
-        return Err((
+        return error_response(
             StatusCode::NOT_FOUND,
-            Json(responses::Response::new(
-                None,
-                Some(vec![Error {
-                    code: 404,
-                    message: "Host Not Found".to_string(),
-                    detail: "The host name is not linked to any AccessCore tenant.".to_string(),
-                    location: "headers.host".to_string(),
-                    meta: HashMap::from([("host".to_string(), json!(host))]),
-                }]),
-                None,
-                None,
-            )),
-        ));
+            "Host Not Found",
+            "The host name is not linked to any AccessCore tenant.",
+            Some("headers.host"),
+            HashMap::from([
+                ("request_id", json!(request_id)),
+                ("tenant_id", Value::Null),
+            ]),
+            request_id,
+            None,
+        )
+        .into_response();
     }
 
     let (tenant_id,): (String,) = result
@@ -91,5 +83,5 @@ pub async fn tenant(
 
     req.extensions_mut().insert(TenantID(tenant_id));
 
-    Ok(next.run(req).await)
+    next.run(req).await
 }
