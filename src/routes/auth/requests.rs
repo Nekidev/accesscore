@@ -7,3 +7,9 @@ pub struct SignUpPayload {
     pub username: Option<String>,
     pub password: String,
 }
+
+#[derive(Debug, Deserialize)]
+pub struct SignInPayload {
+    pub login: String,
+    pub password: String
+}

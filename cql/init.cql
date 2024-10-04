@@ -214,7 +214,7 @@ CREATE TABLE IF NOT EXISTS devices (
 CREATE TABLE IF NOT EXISTS api_tokens (
     tenant_id ASCII,
     user_id ASCII,
-    api_token ASCII,
+    api_token BLOB,
     type TINYINT,  -- (0) ACCESS, (1) REFRESH
     scopes SET<ASCII>,
     device_id ASCII,

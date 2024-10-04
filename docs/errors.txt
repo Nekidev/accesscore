@@ -3,3 +3,5 @@
 3: Database Query Error in /auth/sign-up when querying for existing emails.
 4: Database Error preparing user insert in /auth/sign-up. 
 5: BCrypt hashing error hashing password in /auth/sign-up.
+6: Error inserting user to the database in /auth/sign-up.
+7: Error creating flow token in /auth/sign-up.

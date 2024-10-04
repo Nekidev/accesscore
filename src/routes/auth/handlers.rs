@@ -1,14 +1,13 @@
-use std::collections::HashMap;
-
-use super::requests::SignUpPayload;
+use super::requests::{SignInPayload, SignUpPayload};
 use crate::{
     constants::BCRYPT_PASSWORD_COST,
     db::types::{ContactType, VerificationStatus},
     error_handlers::error_response,
     requests::Request,
-    responses::{CommonError, Error, Response},
+    responses::{CommonError, Error, Response, ResponseMeta},
+    routes::auth::responses::SignInResponse,
     state::AppState,
-    tokens::{Flow, FlowToken, TokenType},
+    tokens::{token, Flow, FlowToken, TokenType},
     types::{RequestID, TenantID},
     utils::{id::gen_id, text::trim},
 };
@@ -20,26 +19,34 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
+use base64::engine::{general_purpose::URL_SAFE, Engine as _};
 use chrono::{Duration, Utc};
 use jwt::{Header, SignWithKey, Token};
 use scylla::{
-    query::Query, serialize::row::SerializeRow, transport::errors::QueryError, QueryResult, Session,
+    batch::Batch,
+    query::Query,
+    serialize::{row::SerializeRow, value::SerializeValue},
+    transport::errors::QueryError,
+    QueryResult, Session,
 };
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use tracing::{event, Level};
 use validator::{ValidateEmail, ValidateLength};
 use zxcvbn::Score;
 
+// TODO: Add rate limit.
+// TODO: Log login.
+// TODO: Add risk-based security.
+// TODO: Add MFA.
+// TODO: Add rules checks.
 pub async fn sign_up(
     Extension(TenantID(tenant_id)): Extension<TenantID>,
     Extension(RequestID(request_id)): Extension<RequestID>,
+    Extension(response_meta): Extension<ResponseMeta<'_>>,
     State(state): State<AppState>,
     payload: Result<Json<Request<SignUpPayload>>, JsonRejection>,
 ) -> response::Response<Body> {
-    let response_meta = Some(HashMap::from([
-        ("request_id", json!(request_id)),
-        ("tenant_id", json!(tenant_id)),
-    ]));
-
     let Json(Request { data: payload, .. }) = match payload {
         Ok(p) => p,
         Err(err) => {
@@ -131,7 +138,8 @@ pub async fn sign_up(
     }
 
     if errors.len() > 0 {
-        let response: Response<Value> = Response::new(None, Some(errors), response_meta, None);
+        let response: Response<Value> =
+            Response::new(None, Some(errors), Some(response_meta), None);
 
         return (StatusCode::UNPROCESSABLE_ENTITY, Json(response)).into_response();
     }
@@ -364,9 +372,255 @@ pub async fn sign_up(
                 ("flow", json!(Flow::SignUpEmailVerification)),
             ])),
             None,
-            response_meta,
+            Some(response_meta),
             Some(HashMap::from([("verify", "/auth/sign-up/verify")])),
         ),
     )
         .into_response()
+}
+
+// TODO: Add rate limit.
+pub async fn sign_in(
+    Extension(TenantID(tenant_id)): Extension<TenantID>,
+    Extension(RequestID(request_id)): Extension<RequestID>,
+    Extension(response_meta): Extension<HashMap<&str, Value>>,
+    State(state): State<AppState>,
+    payload: Result<Json<Request<SignInPayload>>, JsonRejection>,
+) -> response::Response<Body> {
+    let Json(Request { data: payload, .. }) = match payload {
+        Ok(p) => p,
+        Err(err) => {
+            return CommonError::JsonRejection {
+                err,
+                request_id,
+                tenant_id: Some(tenant_id),
+            }
+            .into_response()
+        }
+    };
+
+    let state = state.read().await;
+
+    async fn query_user(
+        db: &Session,
+        tenant_id: &String,
+        request_id: &String,
+        login: impl SerializeValue,
+        table: &str,
+        id_column: &str,
+        query_column: &str,
+        internal_error_code: usize,
+    ) -> Result<Option<String>, CommonError> {
+        let result = db
+            .query_unpaged(
+                format!(
+                    "SELECT {id_column} FROM {table} WHERE tenant_id = ? AND {query_column} = ?"
+                ),
+                (&tenant_id, login),
+            )
+            .await;
+
+        if let Err(e) = result {
+            event!(Level::ERROR, error = format!("{e}"));
+
+            return Err(CommonError::InternalServerError {
+                internal_code: internal_error_code,
+                request_id: request_id.to_owned(),
+                tenant_id: Some(tenant_id.to_owned()),
+            });
+        }
+
+        let result = result.unwrap();
+
+        if let Some(rows) = &result.rows {
+            if rows.len() != 0 {
+                return Ok(Some(
+                    result
+                        .first_row_typed::<(String,)>()
+                        .expect("The query was expected to be able to return rows.")
+                        .0,
+                ));
+            }
+        }
+
+        Ok(None)
+    }
+
+    let mut user_id: Option<String> = None;
+
+    if payload.login.validate_email() {
+        user_id = match query_user(
+            &state.db,
+            &tenant_id,
+            &request_id,
+            &payload.login,
+            "users_by_email",
+            "user_id",
+            "email",
+            8,
+        )
+        .await
+        {
+            Err(e) => return e.into_response(),
+            Ok(id) => id,
+        }
+    }
+
+    if user_id == None {
+        user_id = match query_user(
+            &state.db,
+            &tenant_id,
+            &request_id,
+            &payload.login,
+            "users_by_username",
+            "id",
+            "username",
+            9,
+        )
+        .await
+        {
+            Err(e) => return e.into_response(),
+            Ok(id) => id,
+        }
+    }
+
+    if user_id == None {
+        user_id = match query_user(
+            &state.db,
+            &tenant_id,
+            &request_id,
+            &payload.login,
+            "users_by_phone_number",
+            "user_id",
+            "number",
+            10,
+        )
+        .await
+        {
+            Err(e) => return e.into_response(),
+            Ok(id) => id,
+        }
+    }
+
+    let invalid_credentials_response = error_response(
+        StatusCode::UNAUTHORIZED,
+        "Invalid Credentials",
+        "The credentials provided were invalid.",
+        Some("body.data"),
+        HashMap::from([
+            ("login", json!(payload.login)),
+            ("password", json!(payload.password)),
+        ]),
+        request_id.clone(),
+        Some(tenant_id.clone()),
+    )
+    .into_response();
+
+    match user_id {
+        None => return invalid_credentials_response,
+        Some(id) => {
+            let user_result = state
+                .db
+                .query_unpaged(
+                    "SELECT password FROM users WHERE tenant_id = ? AND id = ?",
+                    (&tenant_id, &id),
+                )
+                .await;
+
+            if let Err(e) = user_result {
+                event!(Level::ERROR, error = format!("{e}"));
+
+                return CommonError::InternalServerError {
+                    internal_code: 11,
+                    request_id,
+                    tenant_id: Some(tenant_id),
+                }
+                .into_response();
+            }
+
+            let password_hash = user_result.unwrap().first_row_typed::<(String,)>();
+
+            match password_hash {
+                Err(e) => {
+                    event!(Level::ERROR, error = format!("{e}"));
+
+                    return CommonError::InternalServerError {
+                        internal_code: 12,
+                        request_id,
+                        tenant_id: Some(tenant_id),
+                    }
+                    .into_response();
+                }
+                Ok((hash,)) => match bcrypt::verify(payload.password, &hash) {
+                    Err(e) => {
+                        event!(Level::ERROR, error = format!("{e}"));
+
+                        return CommonError::InternalServerError {
+                            internal_code: 13,
+                            request_id,
+                            tenant_id: Some(tenant_id),
+                        }
+                        .into_response();
+                    }
+                    Ok(is_valid) => {
+                        if !is_valid {
+                            return invalid_credentials_response;
+                        }
+                    }
+                },
+            }
+
+            let access_token = token(None);
+            let refresh_token = token(None);
+
+            let mut batch = Batch::default();
+
+            // TODO: Make the expiry times configurable by tenant.
+
+            batch.append_statement("INSERT INTO api_tokens (tenant_id, user_id, api_token, type, scopes, created_at) VALUES (?, ?, ?, 0, {}, toTimestamp(now())) USING TTL 3600");
+            batch.append_statement("INSERT INTO api_tokens (tenant_id, user_id, api_token, type, scopes, created_at) VALUES (?, ?, ?, 1, {}, toTimestamp(now())) USING TTL 2628288"); // A month.
+
+            let batch_result = state
+                .db
+                .batch(
+                    &batch,
+                    (
+                        (&tenant_id, &id, &access_token),
+                        (&tenant_id, &id, &refresh_token),
+                    ),
+                )
+                .await;
+
+            match batch_result {
+                Err(e) => {
+                    event!(Level::ERROR, error = format!("{e}"));
+                    return CommonError::InternalServerError {
+                        internal_code: 14,
+                        request_id,
+                        tenant_id: Some(tenant_id),
+                    }
+                    .into_response();
+                }
+                Ok(_) => {
+                    return Json(Response::new(
+                        Some(SignInResponse {
+                            user_id: id,
+                            access_token: URL_SAFE.encode(access_token),
+                            refresh_token: URL_SAFE.encode(refresh_token),
+                            access_token_expires_in: 3600,
+                            refresh_token_expires_in: 2_628_288,
+                            scopes: vec!["all".to_string()],
+                        }),
+                        None,
+                        Some(response_meta),
+                        Some(HashMap::from([
+                            ("self", "/users/@me"),
+                            ("token", "/auth/token"),
+                        ])),
+                    ))
+                    .into_response()
+                }
+            }
+        }
+    }
 }

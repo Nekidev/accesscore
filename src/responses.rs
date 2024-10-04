@@ -169,3 +169,5 @@ impl response::IntoResponse for CommonError {
         data.into_response()
     }
 }
+
+pub type ResponseMeta<'a> = HashMap<&'a str, Value>;

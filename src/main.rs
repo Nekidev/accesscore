@@ -17,23 +17,31 @@ use tower_http::{
     compression::CompressionLayer, decompression::DecompressionLayer, limit::RequestBodyLimitLayer,
     timeout::TimeoutLayer, trace::TraceLayer,
 };
+use tracing::event;
+use tracing::Level;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let debug: bool = env::var("DEBUG").unwrap_or("true".to_string()) == "true".to_string();
 
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     if debug {
         dotenv::from_filename("dev.env").ok();
     }
 
+    event!(Level::INFO, "Connecting to ScyllaDB node...");
     let scylla_session = db::session().await;
+    event!(
+        Level::INFO,
+        "Connected to ScyllaDB node. Running initial query..."
+    );
     db::init(&scylla_session).await;
+    event!(Level::INFO, "Initial query ran.");
 
+    event!(Level::INFO, "Connecting to Redis...");
     let redis_session = redis::session().await;
+    event!(Level::INFO, "Connected to Redis.");
 
     let key: Hmac<Sha384> = Hmac::new_from_slice(b"uwu nya").unwrap();
 
@@ -44,8 +52,12 @@ async fn main() {
     }));
 
     let app = Router::new()
-        .merge(routes::auth::router())
+        .nest("/auth", routes::auth::router())
         .fallback(handler_404)
+        .layer(ax_middleware::from_fn_with_state(
+            state.clone(),
+            ac_middleware::response_meta,
+        ))
         .layer(ax_middleware::from_fn_with_state(
             state.clone(),
             ac_middleware::tenant,
@@ -73,7 +85,7 @@ async fn main() {
         ))
         .with_state(state);
 
-    println!("Starting server!");
+    event!(Level::INFO, "Starting server...");
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app)

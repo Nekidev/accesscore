@@ -85,3 +85,17 @@ pub async fn tenant(
 
     next.run(req).await
 }
+
+pub async fn response_meta(
+    Extension(RequestID(request_id)): Extension<RequestID>,
+    Extension(TenantID(tenant_id)): Extension<TenantID>,
+    mut req: Request,
+    next: Next,
+) -> Response<Body> {
+    req.extensions_mut().insert(HashMap::from([
+        ("tenant_id", json!(tenant_id)),
+        ("request_id", json!(request_id)),
+    ]));
+
+    next.run(req).await
+}
