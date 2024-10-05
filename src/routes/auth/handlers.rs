@@ -561,8 +561,11 @@ pub async fn sign_in(
 
             // TODO: Make the expiry times configurable by tenant.
 
-            batch.append_statement("INSERT INTO api_tokens (tenant_id, user_id, api_token, type, scopes, created_at) VALUES (?, ?, ?, 0, {}, toTimestamp(now())) USING TTL 3600");
-            batch.append_statement("INSERT INTO api_tokens (tenant_id, user_id, api_token, type, scopes, created_at) VALUES (?, ?, ?, 1, {}, toTimestamp(now())) USING TTL 2628288"); // A month.
+            let access_token_expires_in = 3600;
+            let refresh_token_expires_in = 2628288;
+
+            batch.append_statement(format!("INSERT INTO api_tokens (tenant_id, user_id, api_token, type, scopes, created_at) VALUES (?, ?, ?, 0, {{}}, toTimestamp(now())) USING TTL {access_token_expires_in}"));
+            batch.append_statement(format!("INSERT INTO api_tokens (tenant_id, user_id, api_token, type, scopes, created_at) VALUES (?, ?, ?, 1, {{}}, toTimestamp(now())) USING TTL {refresh_token_expires_in}"));
 
             let batch_result = state
                 .db
@@ -590,8 +593,8 @@ pub async fn sign_in(
                             user_id: id,
                             access_token: URL_SAFE.encode(access_token),
                             refresh_token: URL_SAFE.encode(refresh_token),
-                            access_token_expires_in: 3600,
-                            refresh_token_expires_in: 2_628_288,
+                            access_token_expires_in,
+                            refresh_token_expires_in,
                             scopes: vec!["all".to_string()],
                         }),
                         None,
