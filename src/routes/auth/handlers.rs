@@ -153,14 +153,12 @@ pub async fn sign_up(
         values: impl SerializeRow,
         request_id: String,
         tenant_id: Option<String>,
-        error_internal_code: usize,
     ) -> Result<bool, CommonError> {
         let result = db.query_unpaged(query, values).await;
 
         if let Err(err) = result {
             println!("{err}");
             return Err(CommonError::InternalServerError {
-                internal_code: error_internal_code,
                 request_id,
                 tenant_id,
             });
@@ -181,7 +179,6 @@ pub async fn sign_up(
             (tenant_id.clone(), &username),
             request_id.clone(),
             Some(tenant_id.clone()),
-            2,
         )
         .await;
 
@@ -209,7 +206,6 @@ pub async fn sign_up(
         (tenant_id.clone(), &payload.email),
         request_id.clone(),
         Some(tenant_id.clone()),
-        3,
     )
     .await;
 
@@ -237,7 +233,6 @@ pub async fn sign_up(
             (tenant_id.clone(), &phone_number),
             request_id.clone(),
             Some(tenant_id.clone()),
-            4,
         )
         .await;
 
@@ -263,7 +258,6 @@ pub async fn sign_up(
 
     if let Err(_) = password {
         return CommonError::InternalServerError {
-            internal_code: 5,
             request_id,
             tenant_id: Some(tenant_id),
         }
@@ -333,7 +327,6 @@ pub async fn sign_up(
 
     if execution_results.iter().any(|r| r.is_err()) {
         return CommonError::InternalServerError {
-            internal_code: 6,
             request_id,
             tenant_id: Some(tenant_id),
         }
@@ -357,7 +350,6 @@ pub async fn sign_up(
 
     if let Err(_) = token {
         return CommonError::InternalServerError {
-            internal_code: 7,
             request_id,
             tenant_id: Some(tenant_id),
         }
@@ -409,7 +401,6 @@ pub async fn sign_in(
         table: &str,
         id_column: &str,
         query_column: &str,
-        internal_error_code: usize,
     ) -> Result<Option<String>, CommonError> {
         let result = db
             .query_unpaged(
@@ -424,7 +415,6 @@ pub async fn sign_in(
             event!(Level::ERROR, error = format!("{e}"));
 
             return Err(CommonError::InternalServerError {
-                internal_code: internal_error_code,
                 request_id: request_id.to_owned(),
                 tenant_id: Some(tenant_id.to_owned()),
             });
@@ -457,7 +447,6 @@ pub async fn sign_in(
             "users_by_email",
             "user_id",
             "email",
-            8,
         )
         .await
         {
@@ -475,7 +464,6 @@ pub async fn sign_in(
             "users_by_username",
             "id",
             "username",
-            9,
         )
         .await
         {
@@ -493,7 +481,6 @@ pub async fn sign_in(
             "users_by_phone_number",
             "user_id",
             "number",
-            10,
         )
         .await
         {
@@ -531,7 +518,6 @@ pub async fn sign_in(
                 event!(Level::ERROR, error = format!("{e}"));
 
                 return CommonError::InternalServerError {
-                    internal_code: 11,
                     request_id,
                     tenant_id: Some(tenant_id),
                 }
@@ -545,7 +531,6 @@ pub async fn sign_in(
                     event!(Level::ERROR, error = format!("{e}"));
 
                     return CommonError::InternalServerError {
-                        internal_code: 12,
                         request_id,
                         tenant_id: Some(tenant_id),
                     }
@@ -556,7 +541,6 @@ pub async fn sign_in(
                         event!(Level::ERROR, error = format!("{e}"));
 
                         return CommonError::InternalServerError {
-                            internal_code: 13,
                             request_id,
                             tenant_id: Some(tenant_id),
                         }
@@ -595,7 +579,6 @@ pub async fn sign_in(
                 Err(e) => {
                     event!(Level::ERROR, error = format!("{e}"));
                     return CommonError::InternalServerError {
-                        internal_code: 14,
                         request_id,
                         tenant_id: Some(tenant_id),
                     }

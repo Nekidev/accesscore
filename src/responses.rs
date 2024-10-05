@@ -91,7 +91,6 @@ pub enum CommonError {
         tenant_id: Option<String>,
     },
     InternalServerError {
-        internal_code: usize,
         request_id: String,
         tenant_id: Option<String>,
     },
@@ -152,7 +151,6 @@ impl response::IntoResponse for CommonError {
                 ),
             },
             Self::InternalServerError {
-                internal_code,
                 request_id,
                 tenant_id,
             } => error_response(
@@ -160,7 +158,7 @@ impl response::IntoResponse for CommonError {
                 "Internal Server Error",
                 "An unexpected internal error occured.",
                 None,
-                HashMap::from([("internal_code", json!(internal_code))]),
+                None,
                 request_id,
                 tenant_id,
             ),
