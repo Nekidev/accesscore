@@ -9,4 +9,5 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/sign-up", post(handlers::sign_up))
         .route("/sign-in", post(handlers::sign_in))
+        .route("/token", post(handlers::token_refresh))
 }

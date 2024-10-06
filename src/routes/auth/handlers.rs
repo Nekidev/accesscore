@@ -1,11 +1,10 @@
-use super::requests::{SignInPayload, SignUpPayload};
+use super::requests::{RefreshTokenPayload, SignInPayload, SignUpPayload};
 use crate::{
     constants::BCRYPT_PASSWORD_COST,
-    db::types::{ContactType, VerificationStatus},
     error_handlers::error_response,
     requests::Request,
     responses::{CommonError, Error, Response, ResponseMeta},
-    routes::auth::responses::SignInResponse,
+    routes::auth::responses::TokenResponse,
     state::AppState,
     tokens::{token, Flow, FlowToken, TokenType},
     types::{RequestID, TenantID},
@@ -19,7 +18,7 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
-use base64::engine::{general_purpose::URL_SAFE, Engine as _};
+use base64::engine::{general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{Duration, Utc};
 use jwt::{Header, SignWithKey, Token};
 use scylla::{
@@ -156,8 +155,9 @@ pub async fn sign_up(
     ) -> Result<bool, CommonError> {
         let result = db.query_unpaged(query, values).await;
 
-        if let Err(err) = result {
-            println!("{err}");
+        if let Err(e) = result {
+            event!(Level::ERROR, error = format!("{e}"));
+
             return Err(CommonError::InternalServerError {
                 request_id,
                 tenant_id,
@@ -175,7 +175,7 @@ pub async fn sign_up(
     if let Some(username) = &payload.username {
         let username_exists = exists(
             &state.db,
-            "SELECT id FROM users_by_username WHERE tenant_id = ? AND username = ?",
+            "SELECT user_id FROM users_by_username WHERE tenant_id = ? AND username = ?",
             (tenant_id.clone(), &username),
             request_id.clone(),
             Some(tenant_id.clone()),
@@ -256,7 +256,9 @@ pub async fn sign_up(
 
     let password = bcrypt::hash(&payload.password, (&*BCRYPT_PASSWORD_COST).clone() as u32);
 
-    if let Err(_) = password {
+    if let Err(e) = password {
+        event!(Level::ERROR, error = format!("{e}"));
+
         return CommonError::InternalServerError {
             request_id,
             tenant_id: Some(tenant_id),
@@ -270,33 +272,30 @@ pub async fn sign_up(
         state.db.query_unpaged(
             "
                 INSERT INTO users (
-                    tenant_id, id, username, status, roles, login_count, metadata, permissions, password, created_at
+                    tenant_id, user_id, username, is_verified, is_locked, is_suspended, roles, login_count, metadata, permissions, password, created_at
                 ) VALUES (
-                    ?, ?, ?, ?, {}, 0, {}, {}, ?, toTimestamp(now())
+                    ?, ?, ?, false, false, false, {}, 0, {}, {}, ?, toTimestamp(now())
                 ) USING TTL 172800
             ",
             (
                 &tenant_id,
                 &user_id,
                 &payload.username,
-                VerificationStatus::Unverified as i8,
                 password.unwrap(),
             )
         ).await,
         state.db.query_unpaged(
             "
                 INSERT INTO emails (
-                    tenant_id, user_id, email, main, status, type, created_at
+                    tenant_id, user_id, email, is_main, is_work, is_verified, created_at
                 ) VALUES (
-                    ?, ?, ?, true, ?, ?, toTimestamp(now())
+                    ?, ?, ?, true, false, false, toTimestamp(now())
                 ) USING TTL 172800
             ",
             (
                 &tenant_id,
                 &user_id,
                 &payload.email,
-                VerificationStatus::Unverified as i8,
-                ContactType::Personal as i8,
             )
         ).await
     ];
@@ -307,25 +306,25 @@ pub async fn sign_up(
                 .db
                 .query_unpaged(
                     "
-                    INSERT INTO phone_numbers (
-                        tenant_id, user_id, number, main, status, type, created_at
-                    ) VALUES (
-                        ?, ?, ?, true, ?, ?, toTimestamp(now())
-                    ) USING TTL 172800
-                ",
-                    (
-                        &tenant_id,
-                        &user_id,
-                        phone_number,
-                        VerificationStatus::Unverified as i8,
-                        ContactType::Personal as i8,
-                    ),
+                        INSERT INTO phone_numbers (
+                            tenant_id, user_id, number, is_main, is_work, is_verified, created_at
+                        ) VALUES (
+                            ?, ?, ?, true, false, false, toTimestamp(now())
+                        ) USING TTL 172800
+                    ",
+                    (&tenant_id, &user_id, phone_number),
                 )
                 .await,
         );
     }
 
     if execution_results.iter().any(|r| r.is_err()) {
+        for result in execution_results {
+            if let Err(e) = result {
+                event!(Level::ERROR, error = format!("{e}"));
+            }
+        }
+
         return CommonError::InternalServerError {
             request_id,
             tenant_id: Some(tenant_id),
@@ -348,7 +347,9 @@ pub async fn sign_up(
 
     let token = Token::new(header, claims).sign_with_key(&state.hmac);
 
-    if let Err(_) = token {
+    if let Err(e) = token {
+        event!(Level::ERROR, error = format!("{e}"));
+
         return CommonError::InternalServerError {
             request_id,
             tenant_id: Some(tenant_id),
@@ -399,14 +400,11 @@ pub async fn sign_in(
         request_id: &String,
         login: impl SerializeValue,
         table: &str,
-        id_column: &str,
         query_column: &str,
     ) -> Result<Option<String>, CommonError> {
         let result = db
             .query_unpaged(
-                format!(
-                    "SELECT {id_column} FROM {table} WHERE tenant_id = ? AND {query_column} = ?"
-                ),
+                format!("SELECT user_id FROM {table} WHERE tenant_id = ? AND {query_column} = ?"),
                 (&tenant_id, login),
             )
             .await;
@@ -445,7 +443,6 @@ pub async fn sign_in(
             &request_id,
             &payload.login,
             "users_by_email",
-            "user_id",
             "email",
         )
         .await
@@ -462,7 +459,6 @@ pub async fn sign_in(
             &request_id,
             &payload.login,
             "users_by_username",
-            "id",
             "username",
         )
         .await
@@ -479,7 +475,6 @@ pub async fn sign_in(
             &request_id,
             &payload.login,
             "users_by_phone_number",
-            "user_id",
             "number",
         )
         .await
@@ -505,12 +500,12 @@ pub async fn sign_in(
 
     match user_id {
         None => return invalid_credentials_response,
-        Some(id) => {
+        Some(user_id) => {
             let user_result = state
                 .db
                 .query_unpaged(
-                    "SELECT password FROM users WHERE tenant_id = ? AND id = ?",
-                    (&tenant_id, &id),
+                    "SELECT password, login_count FROM users WHERE tenant_id = ? AND user_id = ?",
+                    (&tenant_id, &user_id),
                 )
                 .await;
 
@@ -524,9 +519,10 @@ pub async fn sign_in(
                 .into_response();
             }
 
-            let password_hash = user_result.unwrap().first_row_typed::<(String,)>();
+            let user_row = user_result.unwrap().first_row_typed::<(String, i32)>();
+            let login_count: i32;
 
-            match password_hash {
+            match user_row {
                 Err(e) => {
                     event!(Level::ERROR, error = format!("{e}"));
 
@@ -536,7 +532,7 @@ pub async fn sign_in(
                     }
                     .into_response();
                 }
-                Ok((hash,)) => match bcrypt::verify(payload.password, &hash) {
+                Ok((hash, lc)) => match bcrypt::verify(payload.password, &hash) {
                     Err(e) => {
                         event!(Level::ERROR, error = format!("{e}"));
 
@@ -547,6 +543,8 @@ pub async fn sign_in(
                         .into_response();
                     }
                     Ok(is_valid) => {
+                        login_count = lc;
+
                         if !is_valid {
                             return invalid_credentials_response;
                         }
@@ -564,16 +562,18 @@ pub async fn sign_in(
             let access_token_expires_in = 3600;
             let refresh_token_expires_in = 2628288;
 
-            batch.append_statement(format!("INSERT INTO api_tokens (tenant_id, user_id, api_token, type, scopes, created_at) VALUES (?, ?, ?, 0, {{}}, toTimestamp(now())) USING TTL {access_token_expires_in}"));
-            batch.append_statement(format!("INSERT INTO api_tokens (tenant_id, user_id, api_token, type, scopes, created_at) VALUES (?, ?, ?, 1, {{}}, toTimestamp(now())) USING TTL {refresh_token_expires_in}"));
+            batch.append_statement(format!("INSERT INTO api_tokens (tenant_id, user_id, api_token, is_refresh, scopes, created_at) VALUES (?, ?, ?, false, {{'all'}}, toTimestamp(now())) USING TTL {access_token_expires_in}").as_str());
+            batch.append_statement(format!("INSERT INTO api_tokens (tenant_id, user_id, api_token, is_refresh, scopes, created_at) VALUES (?, ?, ?, true, {{'all'}}, toTimestamp(now())) USING TTL {refresh_token_expires_in}").as_str());
+            batch.append_statement("UPDATE users SET last_login = toTimestamp(now()), login_count = ? WHERE tenant_id = ? AND user_id = ?");
 
             let batch_result = state
                 .db
                 .batch(
                     &batch,
                     (
-                        (&tenant_id, &id, &access_token),
-                        (&tenant_id, &id, &refresh_token),
+                        (&tenant_id, &user_id, &access_token),
+                        (&tenant_id, &user_id, &refresh_token),
+                        (login_count + 1, &tenant_id, &user_id),
                     ),
                 )
                 .await;
@@ -581,6 +581,7 @@ pub async fn sign_in(
             match batch_result {
                 Err(e) => {
                     event!(Level::ERROR, error = format!("{e}"));
+
                     return CommonError::InternalServerError {
                         request_id,
                         tenant_id: Some(tenant_id),
@@ -589,13 +590,14 @@ pub async fn sign_in(
                 }
                 Ok(_) => {
                     return Json(Response::new(
-                        Some(SignInResponse {
-                            user_id: id,
-                            access_token: URL_SAFE.encode(access_token),
-                            refresh_token: URL_SAFE.encode(refresh_token),
+                        Some(TokenResponse {
+                            user_id,
+                            access_token: URL_SAFE_NO_PAD.encode(access_token),
+                            refresh_token: URL_SAFE_NO_PAD.encode(refresh_token),
                             access_token_expires_in,
                             refresh_token_expires_in,
                             scopes: vec!["all".to_string()],
+                            token_type: "Bearer".to_string(),
                         }),
                         None,
                         Some(response_meta),
@@ -609,4 +611,153 @@ pub async fn sign_in(
             }
         }
     }
+}
+
+pub async fn token_refresh(
+    Extension(TenantID(tenant_id)): Extension<TenantID>,
+    Extension(RequestID(request_id)): Extension<RequestID>,
+    Extension(response_meta): Extension<HashMap<&str, Value>>,
+    State(state): State<AppState>,
+    payload: Result<Json<Request<RefreshTokenPayload>>, JsonRejection>,
+) -> response::Response<Body> {
+    let Json(Request { data: payload, .. }) = match payload {
+        Ok(p) => p,
+        Err(err) => {
+            return CommonError::JsonRejection {
+                err,
+                request_id,
+                tenant_id: Some(tenant_id),
+            }
+            .into_response()
+        }
+    };
+
+    let invalid_token_response = (
+        StatusCode::BAD_REQUEST,
+        Response::<Value>::new(
+            None,
+            Some(vec![Error::new(
+                StatusCode::BAD_REQUEST.into(),
+                "Invalid Refresh Token",
+                "The refresh token is not a valid token. Check that it hasn't expired and that you're using the correct token.",
+                Some("body.refresh_token"),
+                HashMap::from([("input", json!(payload.refresh_token))]),
+            )]),
+            Some(response_meta.clone()),
+            None,
+        ),
+    )
+        .into_response();
+
+    let refresh_token_bytes = match URL_SAFE_NO_PAD.decode(&payload.refresh_token) {
+        Ok(b) => b,
+        Err(e) => {
+            event!(Level::ERROR, error = format!("{e}"));
+            return invalid_token_response;
+        }
+    };
+
+    if refresh_token_bytes.len() != 64 {
+        return invalid_token_response;
+    }
+
+    let state = state.read().await;
+
+    let result = state
+        .db
+        .query_unpaged(
+            "
+            SELECT user_id, scopes, device_id, client_id, TTL(created_at) FROM api_tokens
+            WHERE tenant_id = ?
+                AND api_token = ?
+                AND is_refresh = true
+            LIMIT 1",
+            (&tenant_id, &refresh_token_bytes),
+        )
+        .await;
+
+    let row = match result {
+        Ok(r) => r,
+        Err(e) => {
+            event!(Level::ERROR, error = format!("{e}"));
+            return (CommonError::InternalServerError {
+                request_id,
+                tenant_id: Some(tenant_id),
+            })
+            .into_response();
+        }
+    };
+
+    let (user_id, scopes, device_id, client_id, refresh_token_expires_in) =
+        match row.first_row_typed::<(String, Vec<String>, Option<String>, Option<String>, i32)>() {
+            Ok(r) => r,
+            Err(e) => {
+                event!(Level::ERROR, error = format!("{e}"));
+                return invalid_token_response;
+            }
+        };
+
+    let access_token = token(None);
+    let refresh_token = token(None);
+    let access_token_expires_in = 3600;
+
+    let mut batch = Batch::default();
+
+    batch.append_statement("DELETE FROM api_tokens WHERE tenant_id = ? AND api_token = ?");
+    batch.append_statement(format!("INSERT INTO api_tokens (tenant_id, user_id, api_token, is_refresh, scopes, device_id, client_id, created_at) VALUES (?, ?, ?, false, ?, ?, ?, toTimestamp(now())) USING TTL {access_token_expires_in}").as_str());
+    batch.append_statement(format!("INSERT INTO api_tokens (tenant_id, user_id, api_token, is_refresh, scopes, device_id, client_id, created_at) VALUES (?, ?, ?, true, ?, ?, ?, toTimestamp(now())) USING TTL {refresh_token_expires_in}").as_str());
+
+    let inserts_result = state
+        .db
+        .batch(
+            &batch,
+            (
+                (&tenant_id, &refresh_token_bytes),
+                (
+                    &tenant_id,
+                    &user_id,
+                    &access_token,
+                    &scopes,
+                    &device_id,
+                    &client_id,
+                ),
+                (
+                    &tenant_id,
+                    &user_id,
+                    &refresh_token,
+                    &scopes,
+                    &device_id,
+                    &client_id,
+                ),
+            ),
+        )
+        .await;
+
+    if let Err(e) = inserts_result {
+        event!(Level::ERROR, error = format!("{e}"));
+        return CommonError::InternalServerError {
+            request_id,
+            tenant_id: Some(tenant_id),
+        }
+        .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Response::new(
+            Some(TokenResponse {
+                user_id,
+                access_token: URL_SAFE_NO_PAD.encode(access_token),
+                refresh_token: URL_SAFE_NO_PAD.encode(refresh_token),
+                access_token_expires_in,
+                refresh_token_expires_in: refresh_token_expires_in as u64,
+                scopes,
+                token_type: "Bearer".to_string(),
+            }),
+            None,
+            Some(response_meta),
+            None,
+        ),
+    )
+        .into_response()
 }

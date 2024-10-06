@@ -54,11 +54,17 @@ async fn main() {
     let app = Router::new()
         .nest("/auth", routes::auth::router())
         .fallback(handler_404)
+        .layer(
+            // Keep above request_id(), response_meta(), and tenant() middleware.
+            ax_middleware::from_fn_with_state(state.clone(), ac_middleware::authentication),
+        )
         .layer(ax_middleware::from_fn_with_state(
+            // Keep above tenant and request_id middlewares.
             state.clone(),
             ac_middleware::response_meta,
         ))
         .layer(ax_middleware::from_fn_with_state(
+            // Keep as first DB-linked middleware.
             state.clone(),
             ac_middleware::tenant,
         ))

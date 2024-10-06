@@ -1,5 +1,4 @@
 // pub mod orm;
-pub mod types;
 
 use scylla::{
     frame::Compression,

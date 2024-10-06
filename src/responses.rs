@@ -9,7 +9,7 @@ use axum::{
     Json,
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::error_handlers::error_response;
 
@@ -158,7 +158,7 @@ impl response::IntoResponse for CommonError {
                 "Internal Server Error",
                 "An unexpected internal error occured.",
                 None,
-                None,
+                HashMap::new(),
                 request_id,
                 tenant_id,
             ),

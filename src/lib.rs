@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod constants;
 pub mod db;
 pub mod error_handlers;

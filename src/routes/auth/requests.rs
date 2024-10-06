@@ -11,5 +11,10 @@ pub struct SignUpPayload {
 #[derive(Debug, Deserialize)]
 pub struct SignInPayload {
     pub login: String,
-    pub password: String
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RefreshTokenPayload {
+    pub refresh_token: String
 }

@@ -6,56 +6,57 @@ CREATE KEYSPACE IF NOT EXISTS accesscore WITH replication = {
 USE accesscore;
 
 CREATE TABLE IF NOT EXISTS tenants (
-    id ASCII,
+    tenant_id ASCII,
     name TEXT,
     host TEXT,
-    PRIMARY KEY (id)
+    created_at TIMESTAMP,
+    PRIMARY KEY (tenant_id)
 );
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS tenants_by_host AS
-    SELECT id, host
+    SELECT tenant_id, host
     FROM tenants
-    WHERE host IS NOT NULL AND id IS NOT NULL
-    PRIMARY KEY (host, id);
+    WHERE host IS NOT NULL
+        AND tenant_id IS NOT NULL
+    PRIMARY KEY (host, tenant_id);
 
 CREATE TABLE IF NOT EXISTS tenants_by_admin_users (
     user_id ASCII,
-    role TINYINT,
     tenant_id ASCII,
     PRIMARY KEY (user_id, tenant_id)
 );
 
-CREATE TABLE IF NOT EXISTS admin_users_by_tenant (
-    user_id ASCII,
-    role TINYINT,
-    tenant_id ASCII,
-    PRIMARY KEY (tenant_id, user_id)
-);
+CREATE MATERIALIZED VIEW IF NOT EXISTS admin_users_by_tenant AS
+    SELECT user_id, tenant_id
+    FROM tenants_by_admin_users
+    WHERE user_id IS NOT NULL
+        AND tenant_id IS NOT NULL
+    PRIMARY KEY (tenant_id, user_id);
 
 CREATE TABLE IF NOT EXISTS oauth_provider_settings (
     tenant_id ASCII,
     provider ASCII,
     client_id ASCII,
     client_secret ASCII,
-    active BOOLEAN,
+    is_active BOOLEAN,
     metadata MAP<ASCII,TEXT>,
     PRIMARY KEY (tenant_id, provider)
 );
 
 CREATE TABLE IF NOT EXISTS tenant_settings (
     tenant_id ASCII,
-    type TINYINT,  -- (0) SECURITY, (1) LOGIN, ...
+    category TINYINT,
     key ASCII,
     value TEXT,
-    PRIMARY KEY ((tenant_id, type), key)
+    PRIMARY KEY ((tenant_id), category, key)
 );
 
 CREATE TABLE IF NOT EXISTS organizations (
     tenant_id ASCII,
-    id ASCII,
+    organization_id ASCII,
     name TEXT,
     metadata MAP<ASCII,ASCII>,
-    PRIMARY KEY ((tenant_id, id))
+    PRIMARY KEY ((tenant_id, organization_id))
 );
 
 CREATE TABLE IF NOT EXISTS organizations_by_user (
@@ -65,66 +66,72 @@ CREATE TABLE IF NOT EXISTS organizations_by_user (
     PRIMARY KEY ((tenant_id, user_id), organization_id)
 );
 
-CREATE TABLE IF NOT EXISTS users_by_organization (
-    tenant_id ASCII,
-    user_id ASCII,
-    organization_id ASCII,
-    PRIMARY KEY ((tenant_id, organization_id), user_id)
+CREATE MATERIALIZED VIEW IF NOT EXISTS users_by_organization AS
+    SELECT tenant_id, user_id, organization_id
+    FROM organizations_by_user
+    WHERE tenant_id IS NOT NULL
+        AND user_id IS NOT NULL
+        AND organization_id IS NOT NULL
+    PRIMARY KEY ((tenant_id, organization_id), user_id);
+
+CREATE TYPE IF NOT EXISTS user_name (
+    first TEXT,
+    middle TEXT,
+    last TEXT,
+    prefix TEXT,
+    suffix TEXT
 );
 
-CREATE TABLE IF NOT EXISTS users (
-    id ASCII,
-    tenant_id ASCII,
-    username TEXT,
-    first_name TEXT,
-    middle_name TEXT,
-    last_name TEXT,
-    honorific_prefix TEXT,           -- Ex. "Mr.", "Ms.", "Dr.".
-    honorific_suffix TEXT,           -- Ex. "III".
-    location TEXT,                   -- Ex. "New York, USA", "Buenos Aires, Argentina".
-    locale ASCII,                    -- {ISO 639-3}{ISO 15924}{ISO 3166}.
-    preferred_language ASCII,        -- {ISO 639-3}{ISO 15924}{ISO 3166}.
-    type TINYINT,                    -- USER (0) or MANAGER (1). It specifies who can access the tenant's settings.
-    timezone ASCII,
-    status TINYINT,                  -- UNVERIFIED (0), ACTIVE (1), LOCKED (2), SUSPENDED (3), ON_DELETION (4).
+CREATE TYPE IF NOT EXISTS user_employment (
     title TEXT,
-    -- groups SET<ASCII>,
-    manager ASCII,                   -- The user's manager ID.
-    roles SET<TEXT>,                 -- A list of the user's roles.
-    employee_number INT,
+    manager_id ASCII,
     cost_center TEXT,
     organization TEXT,
     division TEXT,
-    department TEXT,
+    department TEXT
+);
+
+CREATE TABLE IF NOT EXISTS users (
+    user_id ASCII,
+    tenant_id ASCII,
+    username TEXT,
+    name FROZEN<user_name>,
+    location TEXT,
+    locale ASCII,  -- {ISO 639-3}{ISO 15924}{ISO 3166}.
+    can_access_tenant BOOLEAN,
+    timezone ASCII,
+    is_verified BOOLEAN,
+    is_locked BOOLEAN,
+    is_suspended BOOLEAN,
+    roles SET<TEXT>,
+    employment FROZEN<user_employment>,
     last_login TIMESTAMP,
     login_count INT,
     metadata MAP<ASCII,ASCII>,
     permissions SET<ASCII>,
-    -- image_id ASCII,               -- Use something like {base-cdn}/tenants/{tenant-id}/avatars/{user-id}.
-    password ASCII,                  -- 60-char-long bcrypt hash.
-    security_question_id SMALLINT,   -- The security question's ID. An ID is kept instead of the question itself to support translation.
-    security_question_answer ASCII,  -- 60-char-long bcrypt hash.
+    password ASCII,
+    security_question_id SMALLINT,
+    security_question_answer ASCII,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    delete_at TIMESTAMP,
-    PRIMARY KEY ((id, tenant_id))
+    PRIMARY KEY ((user_id, tenant_id))
 );
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS users_by_username AS
-    SELECT tenant_id, id, username
+    SELECT tenant_id, user_id, username
     FROM users
     WHERE tenant_id IS NOT NULL
-        AND id IS NOT NULL
+        AND user_id IS NOT NULL
         AND username IS NOT NULL
-    PRIMARY KEY ((tenant_id, username), id);
+    PRIMARY KEY ((tenant_id, username), user_id);
 
 CREATE TABLE IF NOT EXISTS emails (
     tenant_id ASCII,
     user_id ASCII,
     email TEXT,
-    main BOOLEAN,
-    type TINYINT,   -- PERSONAL (0), WORK (1)
-    status TINYINT, -- UNVERIFIED (0), VERIFIED (1)
+    is_main BOOLEAN,
+    is_work BOOLEAN,
+    is_verified BOOLEAN,
     created_at TIMESTAMP,
     verified_at TIMESTAMP,
     PRIMARY KEY ((tenant_id, user_id), email)
@@ -142,9 +149,9 @@ CREATE TABLE IF NOT EXISTS phone_numbers (
     tenant_id ASCII,
     user_id ASCII,
     number ASCII,
-    main BOOLEAN,
-    type TINYINT,    -- PERSONAL (0), WORK (1)
-    status TINYINT,  -- UNVERIFIED (0), VERIFIED (1)
+    is_main BOOLEAN,
+    is_work BOOLEAN,
+    is_verified BOOLEAN,
     created_at TIMESTAMP,
     verified_at TIMESTAMP,
     PRIMARY KEY ((tenant_id, user_id))
@@ -163,11 +170,13 @@ CREATE TABLE IF NOT EXISTS oauth_accounts (
     user_id ASCII,
     provider ASCII,
     external_id ASCII,
+    name TEXT,
     access_token ASCII,
     refresh_token ASCII,
     access_token_expires_at TIMESTAMP,
     refresh_token_expires_at TIMESTAMP,
-    status TINYINT,  -- (0) NORMAL, (1) REQUIRES_RELOGIN
+    scopes SET<ASCII>,
+    is_active BOOLEAN,
     PRIMARY KEY ((tenant_id, user_id), provider, external_id)
 );
 
@@ -184,62 +193,75 @@ CREATE TABLE IF NOT EXISTS mfa_codes (
     tenant_id ASCII,
     user_id ASCII,
     code INT,
-    type TINYINT,  -- (0) EMAIL, (1) SMS, (2) WHATSAPP, (3) PUSH_NOTIFICATION
+    code_type TINYINT,
     created_at TIMESTAMP,
-    PRIMARY KEY ((tenant_id, user_id, type))
+    PRIMARY KEY ((tenant_id, user_id, code_type))
 ) WITH default_time_to_live = 900;  -- 15 minutes.
 
 CREATE TABLE IF NOT EXISTS passwords (
     tenant_id ASCII,
     user_id ASCII,
-    changed_at TIMESTAMP,
     hash ASCII,
+    changed_at TIMESTAMP,
     PRIMARY KEY ((tenant_id, user_id), changed_at)
 ) WITH default_time_to_live = 15811200;  -- 6 months.
 
 CREATE TABLE IF NOT EXISTS devices (
     tenant_id ASCII,
     user_id ASCII,
-    id ASCII,
-    name ASCII,
+    device_id ASCII,
     os ASCII,
-    client ASCII,
+    os_version ASCII,
+    family TEXT,
+    brand TEXT,
+    model TEXT,
+    client_id ASCII,
     ip INET,
     location TEXT,
-    last_login TIMESTAMP,
     created_at TIMESTAMP,
-    PRIMARY KEY ((tenant_id, user_id), id)
+    last_login TIMESTAMP,
+    PRIMARY KEY ((tenant_id, user_id), device_id)
 );
 
 CREATE TABLE IF NOT EXISTS api_tokens (
     tenant_id ASCII,
     user_id ASCII,
     api_token BLOB,
-    type TINYINT,  -- (0) ACCESS, (1) REFRESH
+    is_refresh BOOLEAN,
     scopes SET<ASCII>,
     device_id ASCII,
-    created_at TIMESTAMP,
     client_id ASCII,
-    PRIMARY KEY ((tenant_id, api_token), user_id)
+    created_at TIMESTAMP,
+    PRIMARY KEY ((tenant_id, api_token), is_refresh, user_id)
 ) WITH default_time_to_live = 2592000;  -- A month.
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS api_tokens_by_user AS
+    SELECT tenant_id, user_id, api_token, is_refresh
+    FROM api_tokens
+    WHERE tenant_id IS NOT NULL
+        AND user_id IS NOT NULL
+        AND api_token IS NOT NULL
+        AND is_refresh IS NOT NULL
+    PRIMARY KEY ((tenant_id, user_id), is_refresh, api_token);
 
 CREATE TABLE IF NOT EXISTS api_clients (
     tenant_id ASCII,
-    id ASCII,
+    client_id ASCII,
+    secret ASCII,
     name TEXT,
-    type TINYINT, -- (0) INTERNAL, (1) WEB, (2) DESKTOP, (3) MOBILE, (4) CONSOLE, (5) IOT
-    PRIMARY KEY ((tenant_id, id))
+    client_type TINYINT,
+    PRIMARY KEY ((tenant_id, client_id))
 );
 
 CREATE TABLE IF NOT EXISTS groups (
     tenant_id ASCII,
-    id ASCII,
+    group_id ASCII,
     name TEXT,
     description TEXT,
     permissions SET<ASCII>,
     priority SMALLINT,
     color INT,
-    PRIMARY KEY ((tenant_id, id), priority)
+    PRIMARY KEY ((tenant_id, group_id), priority)
 );
 
 CREATE TABLE IF NOT EXISTS users_by_group (
@@ -259,47 +281,47 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS groups_by_user AS
 
 CREATE TABLE IF NOT EXISTS activity_logs (
     tenant_id ASCII,
-    organization_id ASCII,
-    user_id ASCII,
-    group_id ASCII,
     request_id ASCII,
+    user_id ASCII,
+    data ASCII,
     timestamp TIMESTAMP,
-    details ASCII,
-    PRIMARY KEY (tenant_id)
+    PRIMARY KEY (tenant_id, request_id)
 );
 
 CREATE TABLE IF NOT EXISTS notification_recipients (
     tenant_id ASCII,
     notification_id ASCII,
     user_id ASCII,
-    status TINYINT,             -- (0) DELIVERING, (1) DELIVERED, (2) FAILED
+    status TINYINT,
     delivered_at TIMESTAMP,
     read_at TIMESTAMP,
-    notification_type TINYINT,  -- (0) IN_APP, (1) EMAIL, (2) SMS, (3) WHATSAPP, (4) PUSH
+    notification_type TINYINT,
     PRIMARY KEY ((tenant_id, user_id), notification_id)
 ) WITH default_time_to_live = 7776000  -- 3 months.
     AND CLUSTERING ORDER BY (notification_id DESC);
 
 CREATE TABLE IF NOT EXISTS notifications (
     tenant_id ASCII,
-    id ASCII,
-    event_type SMALLINT,  -- (0) NEW_LOGIN, (1) UNRECOGNIZED_LOGIN, (2) ...
-    type TINYINT,         -- (0) IN_APP, (1) EMAIL, (2) SMS, (3) WHATSAPP, (4) PUSH
+    notification_id ASCII,
+    event_type SMALLINT,
+    notification_type TINYINT,
     title TEXT,
     message TEXT,
     data MAP<ASCII,TEXT>,
-    priority TINYINT,     -- (0) LOW, (1) MEDIUM, (2) HIGH, (3) CRITICAL
+    priority TINYINT,
     created_at TIMESTAMP,
-    PRIMARY KEY (tenant_id, id)
+    PRIMARY KEY (tenant_id, notification_id)
 ) WITH default_time_to_live = 7776000;  -- 3 months.
 
-INSERT INTO tenants (id, name, host) VALUES ('accesscore', 'AccessCore', 'localhost:3000');
+INSERT INTO tenants (tenant_id, name, host) VALUES ('accesscore', 'AccessCore', 'localhost:3000');
 INSERT INTO users (
     tenant_id,
-    id,
+    user_id,
     username,
-    type,
-    status,
+    can_access_tenant,
+    is_verified,
+    is_locked,
+    is_suspended,
     password,
     location,
     locale,
@@ -313,8 +335,10 @@ INSERT INTO users (
     'accesscore',
     'admin',
     'admin',
-    1,
-    1,
+    true,
+    true,
+    false,
+    false,
     '$2y$10$hUfIyQqviGw8WC4OAlqtdegouWzSToQ8qu4ppOubBx0LEiuQPASWO',
     'Buenos Aires, Argentina',
     'spaLatnAR',

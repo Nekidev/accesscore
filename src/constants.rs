@@ -1,4 +1,7 @@
-use std::{sync::LazyLock, time::{Duration, Instant}};
+use std::{
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 pub static BCRYPT_PASSWORD_COST: LazyLock<u8> = LazyLock::new(bcrypt_hash_time);
 
