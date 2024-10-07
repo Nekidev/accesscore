@@ -1,20 +1,22 @@
 use axum::{
     body::Body,
-    extract::{Host, Request, State},
-    http::{HeaderMap, Response, StatusCode},
+    extract::{ConnectInfo, Host, Request, State},
+    http::{HeaderMap, HeaderValue, Response, StatusCode},
     middleware::Next,
     response::IntoResponse,
     Extension,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use chrono::Utc;
 use regex::Regex;
 use serde_json::{json, Value};
-use std::{collections::HashMap, io::Read};
+use std::{cmp, collections::HashMap, io::Read, net::SocketAddr};
+use tracing::{event, Level};
 
 use crate::{
     auth::Auth,
     error_handlers::error_response,
-    responses::{self, Error},
+    responses::{self, CommonError, Error},
     state::AppState,
     types::{RequestID, TenantID},
     utils::id::gen_id,
@@ -212,4 +214,141 @@ pub async fn response_meta(
     ]));
 
     next.run(req).await
+}
+
+pub async fn global_ratelimit(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Extension(RequestID(request_id)): Extension<RequestID>,
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response<Body> {
+    event!(
+        Level::INFO,
+        ip = addr.ip().to_string(),
+        port = addr.port().to_string()
+    );
+
+    let state = state.read().await;
+
+    let mut redis_connection = match state.redis.get_multiplexed_async_connection().await {
+        Err(e) => {
+            event!(Level::ERROR, error = format!("{e}"));
+            return CommonError::InternalServerError {
+                request_id,
+                tenant_id: None,
+            }
+            .into_response();
+        }
+        Ok(conn) => conn,
+    };
+
+    let bucket = "global";
+    let bucket_refill_every = 500;
+    let bucket_max_tokens: i64 = 5;
+    let mut used_tokens: i64 = 0;
+    let mut refills_in: i64 = 0;
+    let mut blocked = false;
+
+    let mut response: Response<Body>;
+
+    let key = format!("rl:{}:{bucket}", addr.ip());
+
+    let (user_bucket,): (HashMap<String, String>,) = match redis::pipe()
+        .atomic()
+        .cmd("HGETALL")
+        .arg(&key)
+        .query_async(&mut redis_connection)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            event!(Level::ERROR, error = format!("{e}"));
+            (HashMap::new(),)
+        }
+    };
+
+    if let (Some(used_tokens_str), Some(last_request_timestamp)) =
+        (user_bucket.get("t"), user_bucket.get("l"))
+    {
+        let last_request_timestamp = last_request_timestamp.parse::<i64>().unwrap();
+        let now = Utc::now().timestamp_millis();
+
+        refills_in = (now - last_request_timestamp) % bucket_refill_every;
+
+        used_tokens = cmp::max(
+            used_tokens_str.parse::<i64>().unwrap()
+                - ((now - last_request_timestamp) / bucket_refill_every),
+            0,
+        );
+
+        if used_tokens >= bucket_max_tokens {
+            blocked = true;
+            response = error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too Many Requests",
+                "You made too many requests to the AccessCore API.",
+                None,
+                HashMap::from([]),
+                request_id.clone(),
+                None,
+            )
+            .into_response();
+        } else {
+            used_tokens += 1;
+            response = next.run(req).await;
+        }
+    } else {
+        used_tokens += 1;
+        response = next.run(req).await;
+    }
+
+    if !blocked {
+        match redis::pipe()
+            .atomic()
+            .cmd("HSET")
+            .arg(&key)
+            .arg("t")
+            .arg(format!("{used_tokens}"))
+            .arg("l")
+            .arg(format!("{}", Utc::now().timestamp_millis()))
+            .cmd("HPEXPIRE")
+            .arg(&key)
+            .arg(bucket_max_tokens * bucket_refill_every)
+            .arg("FIELDS")
+            .arg("2")
+            .arg("t")
+            .arg("l")
+            .exec_async(&mut redis_connection)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                event!(Level::ERROR, error = format!("{e}"));
+                return CommonError::InternalServerError {
+                    request_id,
+                    tenant_id: None,
+                }
+                .into_response();
+            }
+        };
+    }
+
+    response
+        .headers_mut()
+        .insert("X-RateLimit-Bucket", HeaderValue::from_str(bucket).unwrap());
+    response.headers_mut().insert(
+        "X-RateLimit-Limit",
+        HeaderValue::from_str(bucket_max_tokens.to_string().as_str()).unwrap(),
+    );
+    response.headers_mut().insert(
+        "X-RateLimit-Remaining",
+        HeaderValue::from_str((bucket_max_tokens - used_tokens).to_string().as_str()).unwrap(),
+    );
+    response.headers_mut().insert(
+        "X-RateLimit-Refill",
+        HeaderValue::from_str(refills_in.to_string().as_str()).unwrap(),
+    );
+
+    response
 }

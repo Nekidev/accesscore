@@ -30,7 +30,7 @@ pub async fn session() -> Session {
         .default_execution_profile_handle(execution_profile_handle)
         .build()
         .await
-        .unwrap()
+        .expect("ScyllaDB pool had no connections, meaning no known node is up. Check for their availability and try again.")
 }
 
 pub async fn init(session: &Session) {

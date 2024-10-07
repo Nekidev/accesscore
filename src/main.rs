@@ -10,6 +10,7 @@ use hmac::Hmac;
 use hmac::Mac;
 use sha2::Sha384;
 use std::env;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -68,6 +69,11 @@ async fn main() {
             state.clone(),
             ac_middleware::tenant,
         ))
+        .layer(ax_middleware::from_fn_with_state(
+            // Keep above all the DB-linked middleware to prevent useless calls to the DB.
+            state.clone(),
+            ac_middleware::global_ratelimit,
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(
             CompressionLayer::new()
@@ -94,10 +100,13 @@ async fn main() {
     event!(Level::INFO, "Starting server...");
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown())
-        .await
-        .unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown())
+    .await
+    .unwrap();
 }
 
 async fn shutdown() {
