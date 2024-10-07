@@ -8,6 +8,7 @@ use axum::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::Utc;
+use num_traits::ToPrimitive;
 use regex::Regex;
 use serde_json::{json, Value};
 use std::{cmp, collections::HashMap, io::Read, net::SocketAddr};
@@ -244,10 +245,10 @@ pub async fn global_ratelimit(
     };
 
     let bucket = "global";
-    let bucket_refill_every = 500;
-    let bucket_max_tokens: i64 = 5;
+    let bucket_refill_every = 200;
+    let bucket_max_tokens: i64 = 10;
     let mut used_tokens: i64 = 0;
-    let mut refills_in: i64 = 0;
+    let mut single_refill_in: i64 = bucket_refill_every;
     let mut blocked = false;
 
     let mut response: Response<Body>;
@@ -274,7 +275,7 @@ pub async fn global_ratelimit(
         let last_request_timestamp = last_request_timestamp.parse::<i64>().unwrap();
         let now = Utc::now().timestamp_millis();
 
-        refills_in = (now - last_request_timestamp) % bucket_refill_every;
+        single_refill_in = (now - last_request_timestamp) % bucket_refill_every;
 
         used_tokens = cmp::max(
             used_tokens_str.parse::<i64>().unwrap()
@@ -332,6 +333,16 @@ pub async fn global_ratelimit(
                 .into_response();
             }
         };
+    } else {
+        response.headers_mut().insert(
+            "Retry-After",
+            HeaderValue::from_str(
+                (single_refill_in.to_f64().unwrap() / 1000.0)
+                    .to_string()
+                    .as_str(),
+            )
+            .unwrap(),
+        );
     }
 
     response
@@ -347,7 +358,16 @@ pub async fn global_ratelimit(
     );
     response.headers_mut().insert(
         "X-RateLimit-Refill",
-        HeaderValue::from_str(refills_in.to_string().as_str()).unwrap(),
+        HeaderValue::from_str(
+            format!(
+                "{:.3}",
+                (single_refill_in.to_f64().unwrap() / 1000.0
+                    + (used_tokens - 1).to_f64().unwrap() * bucket_refill_every.to_f64().unwrap()
+                        / 1000.0)
+            )
+            .as_str(),
+        )
+        .unwrap(),
     );
 
     response
