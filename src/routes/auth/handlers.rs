@@ -35,10 +35,10 @@ use validator::{ValidateEmail, ValidateLength};
 use zxcvbn::Score;
 
 // TODO: Add rate limit.
-// TODO: Log login.
 // TODO: Add risk-based security.
 // TODO: Add MFA.
 // TODO: Add rules checks.
+// TODO: Add activity logs.
 pub async fn sign_up(
     Extension(TenantID(tenant_id)): Extension<TenantID>,
     Extension(RequestID(request_id)): Extension<RequestID>,

@@ -54,6 +54,7 @@ async fn main() {
 
     let app = Router::new()
         .nest("/auth", routes::auth::router())
+        .nest("/users", routes::users::router())
         .fallback(handler_404)
         .layer(
             // Keep above request_id(), response_meta(), and tenant() middleware.
